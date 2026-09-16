@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: vaccine-prescription-generator
+    runtime: python
+    pythonVersion: 3.12
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt && python -m py_compile app.py"
+    startCommand: "streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT --server.headless=true"
+    envVars:
+      - key: DATABASE_URL
+        sync: false
