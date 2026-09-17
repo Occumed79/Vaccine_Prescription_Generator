@@ -1,33 +1,25 @@
 # Vaccine Prescription Generator
 
-A Streamlit tool for producing vaccine prescription `.docx` files from a Word template and spreadsheet data.
+Streamlit tool for generating vaccine prescription `.docx` files from a Word template and spreadsheet data.
 
 ## Landing experience
 
-The app opens with a full-screen Occu-Med landing scene using the supplied vaccine vial artwork. Five vials remain lined up while each gets a subtle color-matched radiation/bloom effect. A lightweight canvas layer renders drifting colored particles behind the glass frame. Reduced-motion preferences disable the continuous animation.
+The landing page reuses the Occu-Med dark glass visual language while replacing the pricing-agreement animation with a vaccine-specific scene:
 
-Click anywhere on the landing page to enter the generator.
+- five supplied vaccine vial assets arranged in a horizontal lineup
+- color-matched breathing radiation/bloom around each vial
+- moving particle field with depth, drift, bloom, and nearest-vial color influence
+- existing Occu-Med logo treatment
+- full-viewport click-to-enter behavior
+- `prefers-reduced-motion` support
 
-## Generate prescriptions
+## Generator workflow
 
-Create a `.docx` template with placeholders such as:
-
-```text
-{{patient_name}}
-{{vaccine}}
-{{dose}}
-{{date}}
-```
-
-The placeholder name must match a spreadsheet column.
-
-1. Upload the Word prescription template.
-2. Upload a CSV or Excel spreadsheet.
-3. Review the preview.
-4. Generate one completed `.docx` per row.
-5. Download the generated files together in a ZIP with `manifest.csv`.
-
-The placeholder engine supports normal paragraphs and Word table cells.
+1. Upload a vaccine prescription Word template (`.docx`).
+2. Upload prescription data (`.xlsx`, `.xlsm`, `.xls`, or `.csv`).
+3. Use spreadsheet column names as Word template placeholders, for example `{{patient_name}}` and `{{vaccine}}`.
+4. Preview the spreadsheet rows.
+5. Generate one prescription document per row and download the ZIP.
 
 ## Local run
 
@@ -36,18 +28,13 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Render deployment
-
-Runtime: Python 3.12.8
-
-Build command:
+## Tests
 
 ```bash
-pip install --upgrade pip && pip install -r requirements.txt && python -m py_compile app.py ui_experience.py
+pytest -q
+python -m py_compile app.py ui_experience.py
 ```
 
-Start command:
+## Render
 
-```bash
-streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT --server.headless=true
-```
+The repository includes `render.yaml` with the service name `vaccine-prescription-generator`. Render builds with `requirements.txt` and starts the app with Streamlit.
