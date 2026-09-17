@@ -6,7 +6,7 @@ def test_landing_html_contains_vial_lineup_particle_canvas_and_logo_reference():
     assert 'id="particle-field"' in html
     assert 'class="vial-lineup"' in html
     assert html.count('class="vial-shell') >= 5
-    assert 'occu-med-logo.png' in html
+    assert 'occu-med-logo.webp' in html
 
 
 def test_landing_html_contains_color_matched_aura_configuration():
