@@ -4,13 +4,13 @@ import base64
 from pathlib import Path
 
 ASSET_DIR = Path(__file__).parent / "assets"
-LOGO_PATH = ASSET_DIR / "occu-med-logo.png"
+LOGO_PATH = ASSET_DIR / "occu-med-logo.webp"
 VIALS = [
-    ("vial-purple.png", "174, 82, 255", "purple"),
-    ("vial-green.png", "58, 255, 95", "green"),
-    ("vial-blue.png", "42, 165, 255", "blue"),
-    ("vial-cyan.png", "41, 238, 240", "cyan"),
-    ("vial-green-alt.png", "67, 255, 151", "emerald"),
+    ("vial-purple.webp", "174, 82, 255", "purple"),
+    ("vial-green.webp", "58, 255, 95", "green"),
+    ("vial-blue.webp", "42, 165, 255", "blue"),
+    ("vial-cyan.webp", "41, 238, 240", "cyan"),
+    ("vial-green-alt.webp", "67, 255, 151", "emerald"),
 ]
 
 
@@ -102,9 +102,9 @@ def _vial_markup() -> str:
 def _build_landing_html() -> str:
     logo_src = _asset_data_uri(LOGO_PATH)
     logo_html = (
-        f'<img class="brand-image" src="{logo_src}" alt="Occu-Med logo" data-source="occu-med-logo.png" />'
+        f'<img class="brand-image" src="{logo_src}" alt="Occu-Med logo" data-source="occu-med-logo.webp" />'
         if logo_src
-        else '<div class="brand-fallback" data-source="occu-med-logo.png">OCCU-MED</div>'
+        else '<div class="brand-fallback" data-source="occu-med-logo.webp">OCCU-MED</div>'
     )
     vials = _vial_markup()
 
