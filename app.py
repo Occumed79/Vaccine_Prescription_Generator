@@ -22,6 +22,118 @@ except Exception:
 
 TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+@dataclass
+class VaccineTemplate:
+    id: str
+    name: str
+    description: str
+    filename: str
+    bytes_data: bytes
+    file_sha256: str = ""
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def get_database_url() -> str:
+    return os.getenv("DATABASE_URL", "").strip()
+
+
+def database_configured() -> bool:
+    return bool(get_database_url()) and psycopg is not None
+
+
+def get_db_connection():
+    if not database_configured():
+        raise RuntimeError("DATABASE_URL is not configured or psycopg is not installed.")
+    return psycopg.connect(get_database_url(), row_factory=dict_row, autocommit=True)
+
+
+def ensure_template_table() -> None:
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vaccine_prescription_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                file_bytes BYTEA NOT NULL,
+                file_sha256 TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+
+
+def save_template_to_neon(name: str, description: str, filename: str, template_bytes: bytes) -> str:
+    ensure_template_table()
+    template_id = f"vaccine-{uuid.uuid4().hex}"
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO vaccine_prescription_templates
+                (id, name, description, filename, content_type, file_bytes, file_sha256, is_active)
+            VALUES
+                (%(id)s, %(name)s, %(description)s, %(filename)s, %(content_type)s, %(file_bytes)s, %(file_sha256)s, TRUE);
+            """,
+            {
+                "id": template_id,
+                "name": name,
+                "description": description,
+                "filename": filename,
+                "content_type": DOCX_MIME,
+                "file_bytes": template_bytes,
+                "file_sha256": sha256_bytes(template_bytes),
+            },
+        )
+    return template_id
+
+
+def load_templates_from_neon() -> list[VaccineTemplate]:
+    ensure_template_table()
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, description, filename, file_bytes, file_sha256
+            FROM vaccine_prescription_templates
+            WHERE is_active = TRUE
+            ORDER BY name ASC;
+            """
+        ).fetchall()
+    return [
+        VaccineTemplate(
+            id=row["id"],
+            name=row["name"],
+            description=row["description"] or "",
+            filename=row["filename"],
+            bytes_data=bytes(row["file_bytes"]),
+            file_sha256=row["file_sha256"] or "",
+        )
+        for row in rows
+    ]
+
+
+def get_all_templates() -> tuple[list[VaccineTemplate], str]:
+    if database_configured():
+        try:
+            return load_templates_from_neon(), "Neon prescription-form library connected."
+        except Exception as exc:
+            return [], f"Neon is configured but unavailable: {exc}"
+    return [], "Neon is not configured. Add DATABASE_URL to use the saved prescription-form library."
+
+
+def get_template_bytes(template: VaccineTemplate) -> bytes:
+    return template.bytes_data
+
+
 
 def _string_values(values: Mapping[str, object]) -> dict[str, str]:
     return {str(key): "" if value is None else str(value) for key, value in values.items()}
