@@ -327,6 +327,103 @@ def render_configure_tab() -> None:
             st.error(f"Could not save prescription form: {exc}")
 
 
+def render_cdc_data_tab() -> None:
+    import pandas as pd
+    import streamlit as st
+
+    from cdc_data import (
+        CDC_SODA2_SOURCES,
+        fetch_soda2_rows,
+        get_socrata_app_token,
+        source_categories,
+        sources_for_category,
+    )
+
+    st.subheader("CDC Adult Vaccine Data")
+    st.caption(
+        f"{len(CDC_SODA2_SOURCES)} live CDC SODA2 sources are registered. "
+        + ("Socrata App Token connected." if get_socrata_app_token() else "No Socrata App Token detected; public anonymous access will be attempted.")
+    )
+
+    category = st.selectbox("Data category", ["All"] + source_categories(), key="cdc_category")
+    sources = sources_for_category(category)
+    selected_label = st.selectbox(
+        "CDC dataset",
+        [f"{source.title} · {source.dataset_id}" for source in sources],
+        key="cdc_source",
+    )
+    source = next(
+        item for item in sources if selected_label.endswith(item.dataset_id)
+    )
+
+    st.markdown(f"**{source.title}**")
+    st.caption(source.description)
+    st.caption(f"Audience: {source.audience} · Dataset ID: {source.dataset_id}")
+
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        row_limit = st.select_slider(
+            "Preview rows",
+            options=[25, 50, 100, 250, 500, 1000],
+            value=100,
+            key="cdc_limit",
+        )
+    with col2:
+        where_clause = st.text_input(
+            "Optional SoQL filter",
+            placeholder="Example: year = '2025'",
+            key="cdc_where",
+        )
+
+    if st.button("Load CDC data", type="primary", key="load_cdc_data"):
+        try:
+            rows = fetch_soda2_rows(
+                source.dataset_id,
+                limit=int(row_limit),
+                where=where_clause.strip() or None,
+            )
+            st.session_state["cdc_rows"] = rows
+            st.session_state["cdc_loaded_id"] = source.dataset_id
+            st.session_state["cdc_loaded_title"] = source.title
+        except Exception as exc:
+            st.session_state.pop("cdc_rows", None)
+            st.error(f"CDC SODA2 request failed: {exc}")
+
+    rows = st.session_state.get("cdc_rows")
+    loaded_id = st.session_state.get("cdc_loaded_id")
+    if rows is not None and loaded_id == source.dataset_id:
+        frame = pd.DataFrame(rows)
+        st.success(f"Loaded {len(frame):,} row(s) from {st.session_state.get('cdc_loaded_title', source.title)}.")
+        if frame.empty:
+            st.info("The query returned no rows.")
+        else:
+            st.dataframe(frame, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download current preview as CSV",
+                data=frame.to_csv(index=False).encode("utf-8"),
+                file_name=f"cdc-{source.dataset_id}-preview.csv",
+                mime="text/csv",
+                key="cdc_preview_download",
+            )
+
+    with st.expander("Registered SODA2 sources"):
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Dataset": item.dataset_id,
+                        "Title": item.title,
+                        "Category": item.category,
+                        "Audience": item.audience,
+                    }
+                    for item in CDC_SODA2_SOURCES
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def main() -> None:
     import streamlit as st
 
