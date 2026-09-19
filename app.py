@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import os
 import re
+import uuid
 import zipfile
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from docx import Document
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:
+    psycopg = None
+    dict_row = None
 
 TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 
@@ -103,8 +114,108 @@ def _records_from_dataframe(frame) -> list[dict[str, object]]:
     return clean.to_dict(orient="records")
 
 
-def main() -> None:
+def _read_source_file(source):
     import pandas as pd
+
+    suffix = Path(source.name).suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(source, dtype=str).fillna("")
+    return pd.read_excel(source, dtype=str).fillna("")
+
+
+def render_generate_tab() -> None:
+    import streamlit as st
+
+    templates, status = get_all_templates()
+    st.caption(status)
+
+    selected_template_bytes = None
+    if templates:
+        labels = ["Upload a one-time prescription form"] + [template.name for template in templates]
+        selected = st.selectbox("Prescription form", labels)
+        if selected == labels[0]:
+            uploaded_template = st.file_uploader("Vaccine prescription Word template", type=["docx"], key="one_time_template")
+            if uploaded_template is not None:
+                selected_template_bytes = uploaded_template.getvalue()
+        else:
+            template = next(item for item in templates if item.name == selected)
+            selected_template_bytes = get_template_bytes(template)
+            if template.description:
+                st.caption(template.description)
+    else:
+        uploaded_template = st.file_uploader("Vaccine prescription Word template", type=["docx"], key="fallback_template")
+        if uploaded_template is not None:
+            selected_template_bytes = uploaded_template.getvalue()
+
+    source = st.file_uploader("Prescription data", type=["xlsx", "xlsm", "xls", "csv"])
+    if selected_template_bytes is None or source is None:
+        st.info("Choose a saved prescription form (or upload one) and add prescription data to continue.")
+        return
+
+    try:
+        frame = _read_source_file(source)
+    except Exception as exc:
+        st.error(f"Could not read prescription data: {exc}")
+        return
+
+    if frame.empty:
+        st.warning("The uploaded spreadsheet has no prescription rows.")
+        return
+
+    st.subheader("Prescription Preview")
+    st.dataframe(frame, use_container_width=True, hide_index=True)
+    st.caption("Template tokens use spreadsheet column names, for example {{patient_name}} or {{vaccine}}.")
+
+    if st.button("Generate Vaccine Prescriptions", type="primary"):
+        try:
+            zip_bytes, manifest = make_zip(selected_template_bytes, _records_from_dataframe(frame))
+            st.success(f"Generated {len(manifest)} vaccine prescription document(s).")
+            st.download_button(
+                "Download ZIP",
+                data=zip_bytes,
+                file_name=f"vaccine-prescriptions-{date.today().isoformat()}.zip",
+                mime="application/zip",
+            )
+        except Exception as exc:
+            st.error(f"Prescription generation failed: {exc}")
+
+
+def render_configure_tab() -> None:
+    import streamlit as st
+
+    st.subheader("Saved Prescription Forms")
+    templates, status = get_all_templates()
+    st.caption(status)
+    if templates:
+        st.dataframe(
+            [{"Name": t.name, "Description": t.description, "Filename": t.filename} for t in templates],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Add Prescription Form")
+    with st.form("save_vaccine_template", clear_on_submit=True):
+        name = st.text_input("Form name")
+        description = st.text_area("Description")
+        uploaded = st.file_uploader("Prescription form (.docx)", type=["docx"])
+        submitted = st.form_submit_button("Save form to Neon")
+
+    if submitted:
+        if not database_configured():
+            st.error("Neon is not connected. Add DATABASE_URL in Render before saving forms.")
+            return
+        if not name.strip() or uploaded is None:
+            st.error("Form name and .docx file are required.")
+            return
+        try:
+            save_template_to_neon(name.strip(), description.strip(), uploaded.name, uploaded.getvalue())
+            st.success("Prescription form saved permanently in Neon.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not save prescription form: {exc}")
+
+
+def main() -> None:
     import streamlit as st
 
     from ui_experience import apply_luminous_ui, render_landing_page
@@ -124,7 +235,7 @@ def main() -> None:
         """
         <div class="hero">
           <h1>Vaccine Prescription Generator</h1>
-          <p>Complete vaccine prescription Word templates from spreadsheet data. Use <code>{{column_name}}</code> tokens in the template, then generate one document per row.</p>
+          <p>Generate vaccine prescriptions from saved Word forms in the Neon library. Use <code>{{column_name}}</code> tokens, then generate one document per spreadsheet row.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -134,43 +245,11 @@ def main() -> None:
         st.query_params.clear()
         st.rerun()
 
-    template = st.file_uploader("Vaccine prescription Word template", type=["docx"])
-    source = st.file_uploader("Prescription data", type=["xlsx", "xlsm", "xls", "csv"])
-
-    if template is None or source is None:
-        st.info("Upload a .docx prescription template and a spreadsheet to continue.")
-        return
-
-    try:
-        suffix = Path(source.name).suffix.lower()
-        if suffix == ".csv":
-            frame = pd.read_csv(source, dtype=str).fillna("")
-        else:
-            frame = pd.read_excel(source, dtype=str).fillna("")
-    except Exception as exc:
-        st.error(f"Could not read prescription data: {exc}")
-        return
-
-    if frame.empty:
-        st.warning("The uploaded spreadsheet has no prescription rows.")
-        return
-
-    st.subheader("Prescription Preview")
-    st.dataframe(frame, use_container_width=True, hide_index=True)
-    st.caption("Template tokens use spreadsheet column names, for example {{patient_name}} or {{vaccine}}.")
-
-    if st.button("Generate Vaccine Prescriptions", type="primary"):
-        try:
-            zip_bytes, manifest = make_zip(template.getvalue(), _records_from_dataframe(frame))
-            st.success(f"Generated {len(manifest)} vaccine prescription document(s).")
-            st.download_button(
-                "Download ZIP",
-                data=zip_bytes,
-                file_name=f"vaccine-prescriptions-{date.today().isoformat()}.zip",
-                mime="application/zip",
-            )
-        except Exception as exc:
-            st.error(f"Prescription generation failed: {exc}")
+    tab_generate, tab_forms = st.tabs(["Generate Prescriptions", "Prescription Forms"])
+    with tab_generate:
+        render_generate_tab()
+    with tab_forms:
+        render_configure_tab()
 
 
 if __name__ == "__main__":
