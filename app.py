@@ -330,6 +330,7 @@ def render_configure_tab() -> None:
 def render_cdc_data_tab() -> None:
     import pandas as pd
     import streamlit as st
+    import streamlit.components.v1 as components
 
     from cdc_data import (
         CDC_SODA2_SOURCES,
@@ -338,87 +339,266 @@ def render_cdc_data_tab() -> None:
         source_categories,
         sources_for_category,
     )
+    from cdc_reference import (
+        CDC_CONTENT_SOURCES,
+        CDC_IIS_TABLE_SOURCES,
+        IIS_ACCESS_OPTIONS_URL,
+        IIS_RUNTIME_REST_URL,
+        PARKED_IMPORT_SOURCES,
+        YELLOW_BOOK_COUNTRY_URL,
+        fetch_content_api_html,
+        fetch_html_tables,
+        fetch_travel_destinations,
+        fetch_travel_vaccine_table,
+    )
 
     st.subheader("CDC Adult Vaccine Data")
     st.caption(
-        f"{len(CDC_SODA2_SOURCES)} live CDC SODA2 sources are registered. "
-        + ("Socrata App Token connected." if get_socrata_app_token() else "No Socrata App Token detected; public anonymous access will be attempted.")
+        "Live CDC data, official adult schedules, vaccine code sets, and destination-specific "
+        "travel vaccine recommendations in one workspace."
     )
 
-    category = st.selectbox("Data category", ["All"] + source_categories(), key="cdc_category")
-    sources = sources_for_category(category)
-    selected_label = st.selectbox(
-        "CDC dataset",
-        [f"{source.title} · {source.dataset_id}" for source in sources],
-        key="cdc_source",
-    )
-    source = next(
-        item for item in sources if selected_label.endswith(item.dataset_id)
+    live_tab, schedule_tab, codes_tab, travel_tab, imports_tab = st.tabs(
+        ["SODA2 Data", "Adult Schedules", "Vaccine Codes", "Travel Vaccines", "Importer Queue"]
     )
 
-    st.markdown(f"**{source.title}**")
-    st.caption(source.description)
-    st.caption(f"Audience: {source.audience} · Dataset ID: {source.dataset_id}")
-
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        row_limit = st.select_slider(
-            "Preview rows",
-            options=[25, 50, 100, 250, 500, 1000],
-            value=100,
-            key="cdc_limit",
-        )
-    with col2:
-        where_clause = st.text_input(
-            "Optional SoQL filter",
-            placeholder="Example: year = '2025'",
-            key="cdc_where",
+    with live_tab:
+        st.caption(
+            f"{len(CDC_SODA2_SOURCES)} live CDC SODA2 sources are registered. "
+            + (
+                "Socrata App Token connected."
+                if get_socrata_app_token()
+                else "No Socrata App Token detected; public anonymous access will be attempted."
+            )
         )
 
-    if st.button("Load CDC data", type="primary", key="load_cdc_data"):
-        try:
-            rows = fetch_soda2_rows(
-                source.dataset_id,
-                limit=int(row_limit),
-                where=where_clause.strip() or None,
-            )
-            st.session_state["cdc_rows"] = rows
-            st.session_state["cdc_loaded_id"] = source.dataset_id
-            st.session_state["cdc_loaded_title"] = source.title
-        except Exception as exc:
-            st.session_state.pop("cdc_rows", None)
-            st.error(f"CDC SODA2 request failed: {exc}")
+        category = st.selectbox(
+            "Data category",
+            ["All"] + source_categories(),
+            key="cdc_category",
+        )
+        sources = sources_for_category(category)
+        selected_label = st.selectbox(
+            "CDC dataset",
+            [f"{source.title} · {source.dataset_id}" for source in sources],
+            key="cdc_source",
+        )
+        source = next(item for item in sources if selected_label.endswith(item.dataset_id))
 
-    rows = st.session_state.get("cdc_rows")
-    loaded_id = st.session_state.get("cdc_loaded_id")
-    if rows is not None and loaded_id == source.dataset_id:
-        frame = pd.DataFrame(rows)
-        st.success(f"Loaded {len(frame):,} row(s) from {st.session_state.get('cdc_loaded_title', source.title)}.")
-        if frame.empty:
-            st.info("The query returned no rows.")
-        else:
-            st.dataframe(frame, use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download current preview as CSV",
-                data=frame.to_csv(index=False).encode("utf-8"),
-                file_name=f"cdc-{source.dataset_id}-preview.csv",
-                mime="text/csv",
-                key="cdc_preview_download",
+        st.markdown(f"**{source.title}**")
+        st.caption(source.description)
+        st.caption(f"Audience: {source.audience} · Dataset ID: {source.dataset_id}")
+
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            row_limit = st.select_slider(
+                "Preview rows",
+                options=[25, 50, 100, 250, 500, 1000],
+                value=100,
+                key="cdc_limit",
+            )
+        with col2:
+            where_clause = st.text_input(
+                "Optional SoQL filter",
+                placeholder="Example: year = '2025'",
+                key="cdc_where",
             )
 
-    with st.expander("Registered SODA2 sources"):
-        st.dataframe(
-            pd.DataFrame(
+        if st.button("Load CDC data", type="primary", key="load_cdc_data"):
+            try:
+                rows = fetch_soda2_rows(
+                    source.dataset_id,
+                    limit=int(row_limit),
+                    where=where_clause.strip() or None,
+                )
+                st.session_state["cdc_rows"] = rows
+                st.session_state["cdc_loaded_id"] = source.dataset_id
+                st.session_state["cdc_loaded_title"] = source.title
+            except Exception as exc:
+                st.session_state.pop("cdc_rows", None)
+                st.error(f"CDC SODA2 request failed: {exc}")
+
+        rows = st.session_state.get("cdc_rows")
+        loaded_id = st.session_state.get("cdc_loaded_id")
+        if rows is not None and loaded_id == source.dataset_id:
+            frame = pd.DataFrame(rows)
+            st.success(
+                f"Loaded {len(frame):,} row(s) from "
+                f"{st.session_state.get('cdc_loaded_title', source.title)}."
+            )
+            if frame.empty:
+                st.info("The query returned no rows.")
+            else:
+                st.dataframe(frame, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download current preview as CSV",
+                    data=frame.to_csv(index=False).encode("utf-8"),
+                    file_name=f"cdc-{source.dataset_id}-preview.csv",
+                    mime="text/csv",
+                    key="cdc_preview_download",
+                )
+
+        with st.expander("Registered SODA2 sources"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Dataset": item.dataset_id,
+                            "Title": item.title,
+                            "Category": item.category,
+                            "Audience": item.audience,
+                        }
+                        for item in CDC_SODA2_SOURCES
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with schedule_tab:
+        st.caption("Official CDC adult schedule content loaded through the CDC Content Services API.")
+        schedule_label = st.selectbox(
+            "Schedule",
+            [f"{item.title} · {item.media_id}" for item in CDC_CONTENT_SOURCES],
+            key="cdc_schedule_source",
+        )
+        schedule_source = next(
+            item
+            for item in CDC_CONTENT_SOURCES
+            if schedule_label.endswith(str(item.media_id))
+        )
+        st.caption(schedule_source.description)
+
+        if st.button("Load official CDC schedule", type="primary", key="load_cdc_schedule"):
+            try:
+                st.session_state["cdc_schedule_html"] = fetch_content_api_html(
+                    schedule_source.media_id
+                )
+                st.session_state["cdc_schedule_id"] = schedule_source.media_id
+            except Exception as exc:
+                st.session_state.pop("cdc_schedule_html", None)
+                st.error(f"CDC Content Services request failed: {exc}")
+
+        schedule_html = st.session_state.get("cdc_schedule_html")
+        if (
+            schedule_html
+            and st.session_state.get("cdc_schedule_id") == schedule_source.media_id
+        ):
+            components.html(schedule_html, height=950, scrolling=True)
+
+    with codes_tab:
+        st.caption(
+            "Live CDC IIS reference tables for CVX, MVX, products, NDC, CPT, VIS, "
+            "vaccine groups, and current respiratory-season codes."
+        )
+        st.info(
+            "CDC currently warns that its Runtime REST/Viewpoint feeds are temporarily behind "
+            "the latest code-set releases, so this app uses CDC's current published reference "
+            "tables as the primary source."
+        )
+        code_label = st.selectbox(
+            "Code/reference source",
+            [f"{item.title} · {item.key}" for item in CDC_IIS_TABLE_SOURCES],
+            key="cdc_code_source",
+        )
+        code_source = next(
+            item for item in CDC_IIS_TABLE_SOURCES if code_label.endswith(item.key)
+        )
+        st.caption(code_source.description)
+
+        links_col1, links_col2 = st.columns(2)
+        with links_col1:
+            st.link_button("CDC Runtime REST", IIS_RUNTIME_REST_URL)
+        with links_col2:
+            st.link_button("CDC code-set access options", IIS_ACCESS_OPTIONS_URL)
+
+        if st.button("Load CDC code tables", type="primary", key="load_cdc_codes"):
+            try:
+                tables = fetch_html_tables(code_source.url)
+                st.session_state["cdc_code_tables"] = tables
+                st.session_state["cdc_code_key"] = code_source.key
+            except Exception as exc:
+                st.session_state.pop("cdc_code_tables", None)
+                st.error(f"CDC code-table request failed: {exc}")
+
+        code_tables = st.session_state.get("cdc_code_tables")
+        if code_tables and st.session_state.get("cdc_code_key") == code_source.key:
+            table_choice = st.selectbox(
+                "Table",
                 [
-                    {
-                        "Dataset": item.dataset_id,
-                        "Title": item.title,
-                        "Category": item.category,
-                        "Audience": item.audience,
-                    }
-                    for item in CDC_SODA2_SOURCES
-                ]
-            ),
+                    f"Table {index + 1} · {len(frame):,} rows · {len(frame.columns)} columns"
+                    for index, frame in enumerate(code_tables)
+                ],
+                key="cdc_code_table_choice",
+            )
+            table_index = int(table_choice.split()[1]) - 1
+            code_frame = code_tables[table_index]
+            st.dataframe(code_frame, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download displayed code table as CSV",
+                data=code_frame.to_csv(index=False).encode("utf-8"),
+                file_name=f"cdc-{code_source.key}-table-{table_index + 1}.csv",
+                mime="text/csv",
+                key="cdc_code_download",
+            )
+
+    with travel_tab:
+        st.caption(
+            "Destination-specific CDC Travelers' Health recommendations, including routine "
+            "vaccines, travel vaccines, yellow fever recommendations, and country entry requirements."
+        )
+        st.link_button("CDC Yellow Book country guidance", YELLOW_BOOK_COUNTRY_URL)
+
+        if st.button("Load CDC destination list", type="primary", key="load_cdc_destinations"):
+            try:
+                st.session_state["cdc_destinations"] = fetch_travel_destinations()
+            except Exception as exc:
+                st.session_state.pop("cdc_destinations", None)
+                st.error(f"CDC destination-list request failed: {exc}")
+
+        destinations = st.session_state.get("cdc_destinations")
+        if destinations:
+            destination_name = st.selectbox(
+                "Destination",
+                list(destinations.keys()),
+                key="cdc_destination",
+            )
+            destination_url = destinations[destination_name]
+            st.link_button("Open CDC destination page", destination_url)
+
+            if st.button(
+                "Load vaccine recommendations",
+                type="primary",
+                key="load_cdc_travel_vaccines",
+            ):
+                try:
+                    travel_frame = fetch_travel_vaccine_table(destination_url)
+                    st.session_state["cdc_travel_frame"] = travel_frame
+                    st.session_state["cdc_travel_name"] = destination_name
+                except Exception as exc:
+                    st.session_state.pop("cdc_travel_frame", None)
+                    st.error(f"CDC travel-vaccine request failed: {exc}")
+
+            travel_frame = st.session_state.get("cdc_travel_frame")
+            if (
+                travel_frame is not None
+                and st.session_state.get("cdc_travel_name") == destination_name
+            ):
+                st.dataframe(travel_frame, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download destination vaccine recommendations as CSV",
+                    data=travel_frame.to_csv(index=False).encode("utf-8"),
+                    file_name=f"cdc-travel-{re.sub(r'[^A-Za-z0-9]+', '-', destination_name).strip('-').lower()}.csv",
+                    mime="text/csv",
+                    key="cdc_travel_download",
+                )
+
+    with imports_tab:
+        st.caption(
+            "Downloadable NHIS sources are intentionally parked here for the separate Data Importer workflow."
+        )
+        st.dataframe(
+            pd.DataFrame(PARKED_IMPORT_SOURCES),
             use_container_width=True,
             hide_index=True,
         )
@@ -454,11 +634,15 @@ def main() -> None:
         st.query_params.clear()
         st.rerun()
 
-    tab_generate, tab_forms = st.tabs(["Generate Prescriptions", "Prescription Forms"])
+    tab_generate, tab_forms, tab_cdc = st.tabs(
+        ["Generate Prescriptions", "Prescription Forms", "CDC Data"]
+    )
     with tab_generate:
         render_generate_tab()
     with tab_forms:
         render_configure_tab()
+    with tab_cdc:
+        render_cdc_data_tab()
 
 
 if __name__ == "__main__":
