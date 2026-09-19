@@ -53,3 +53,18 @@ def test_make_zip_creates_one_docx_per_record_and_manifest():
         assert "manifest.csv" in archive.namelist()
     assert len(docx_names) == 2
     assert len(manifest) == 2
+
+
+def test_database_configured_requires_url_and_driver(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(app, "psycopg", object(), raising=False)
+    assert app.database_configured() is False
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    assert app.database_configured() is True
+
+
+def test_saved_template_bytes_are_reusable():
+    template = app.VaccineTemplate(
+        id="t1", name="Travel Vaccine Rx", description="test", filename="rx.docx", bytes_data=b"docx-bytes"
+    )
+    assert app.get_template_bytes(template) == b"docx-bytes"
