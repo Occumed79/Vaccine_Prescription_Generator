@@ -3,5 +3,5 @@ services:
     name: vaccine-prescription-generator
     runtime: python
     pythonVersion: 3.12
-    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt && python -m py_compile app.py ui_experience.py cdc_data.py cdc_reference.py"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt && python -m py_compile app.py ui_experience.py cdc_data.py cdc_reference.py who_data.py"
     startCommand: "streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT --server.headless=true"
