@@ -56,3 +56,46 @@ def test_find_vaccine_table_prefers_recommendation_table():
 def test_import_queue_is_only_parked_adult_sources():
     areas = {item["vaccine_area"] for item in cdc_reference.PARKED_IMPORT_SOURCES}
     assert areas == {"Hepatitis A", "Hepatitis B", "HPV"}
+
+
+def test_cdsi_downloads_include_supporting_data_and_both_test_case_files():
+    keys = {item.key for item in cdc_reference.CDSI_DOWNLOADS}
+    assert {
+        "cdsi-supporting-data",
+        "cdsi-healthy-adult-test-cases",
+        "cdsi-underlying-condition-test-cases",
+    } <= keys
+
+
+def test_clinical_registry_contains_requested_occu_med_guidance():
+    keys = {item.key for item in cdc_reference.CDC_CLINICAL_SOURCES}
+    assert {
+        "adult-notes",
+        "adult-appendix",
+        "timing-spacing",
+        "occupational-hepb",
+        "adult-medical-indications",
+        "meningococcal-risk",
+        "rabies-prep",
+        "hcp-immunization-programs",
+        "icvp",
+    } <= keys
+
+
+def test_fetch_travel_health_notices_parses_rss(monkeypatch):
+    xml = b"""<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>Level 2 - Yellow Fever in Exampleland</title>
+        <link>https://example.test/yf</link>
+        <pubDate>Fri, 18 Sep 2026 04:00:00 GMT</pubDate>
+        <description>Example notice</description>
+      </item>
+    </channel></rss>"""
+
+    monkeypatch.setattr(cdc_reference, "_fetch_bytes", lambda url, timeout=45: xml)
+    notices = cdc_reference.fetch_travel_health_notices()
+
+    assert notices[0]["level"] == "Level 2"
+    assert notices[0]["title"] == "Level 2 - Yellow Fever in Exampleland"
+    assert notices[0]["link"] == "https://example.test/yf"
