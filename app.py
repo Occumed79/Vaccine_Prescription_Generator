@@ -758,6 +758,348 @@ def render_cdc_data_tab() -> None:
         )
 
 
+def render_who_data_tab() -> None:
+    import pandas as pd
+    import plotly.express as px
+    import streamlit as st
+
+    from who_data import ensure_who_seed_data, query_who, who_table_counts
+
+    @st.cache_resource(show_spinner=False)
+    def _ensure_who_loaded():
+        return ensure_who_seed_data()
+
+    with st.spinner("Checking WHO vaccine data in Neon..."):
+        status = _ensure_who_loaded()
+
+    st.subheader("WHO Global Vaccine Intelligence")
+    if not status.get("configured"):
+        st.error(status.get("message", "Neon is not configured."))
+        return
+    if not status.get("loaded"):
+        st.error(status.get("message", "WHO data could not be loaded."))
+        return
+
+    manifest = status.get("manifest") or {}
+    table_counts = who_table_counts()
+    total_rows = sum(table_counts.values())
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("WHO rows in Neon", f"{total_rows:,}")
+    metric_cols[1].metric("Adult schedule rows", f"{table_counts.get('who_vaccine_schedule_adult', 0):,}")
+    metric_cols[2].metric("Disease observations", f"{table_counts.get('who_vpd_annual', 0):,}")
+    metric_cols[3].metric("Program indicators", f"{table_counts.get('who_program_indicators', 0):,}")
+
+    st.caption(
+        "Adult/deployment-relevant WHO data ingested from the uploaded September 2026 source files. "
+        "Pediatric-only survey/WUENIC source files were intentionally excluded from this app dataset."
+    )
+
+    countries = query_who(
+        """
+        SELECT code AS iso3, name AS country
+        FROM who_vpd_annual
+        WHERE code <> '' AND name <> ''
+        GROUP BY code, name
+        ORDER BY name;
+        """
+    )
+    if not countries:
+        st.warning("WHO country data is not available yet.")
+        return
+
+    country_labels = [f"{row['country']} · {row['iso3']}" for row in countries]
+    selected_label = st.selectbox("Country / area", country_labels, key="who_country")
+    selected = countries[country_labels.index(selected_label)]
+    iso3 = selected["iso3"]
+    country_name = selected["country"]
+
+    overview_tab, disease_tab, schedule_tab, mr_tab, program_tab = st.tabs(
+        [
+            "Country Overview",
+            "Disease Surveillance",
+            "Adult Vaccine Schedule",
+            "Measles / Rubella",
+            "Program & Supply",
+        ]
+    )
+
+    with overview_tab:
+        st.markdown(f"### {country_name}")
+
+        yf_rows = query_who(
+            """
+            SELECT indicator_code, description, value
+            FROM who_program_indicators
+            WHERE iso3 = %s AND category_code = 'YELLOW_FEVER'
+            ORDER BY indicator_code;
+            """,
+            (iso3,),
+        )
+        polio_rows = query_who(
+            """
+            SELECT indicator_code, description, value
+            FROM who_program_indicators
+            WHERE iso3 = %s AND category_code = 'POLIO_ERADICATION'
+            ORDER BY indicator_code;
+            """,
+            (iso3,),
+        )
+        elim_rows = query_who(
+            """
+            SELECT DISTINCT ON (disease) disease, year, status
+            FROM who_mr_elimination
+            WHERE iso3 = %s
+            ORDER BY disease, year::int DESC;
+            """,
+            (iso3,),
+        )
+        schedule_count = query_who(
+            "SELECT COUNT(*) AS n FROM who_vaccine_schedule_adult WHERE iso_3_code = %s;",
+            (iso3,),
+        )
+
+        cards = st.columns(4)
+        yf_risk = next((row["value"] for row in yf_rows if row["indicator_code"] == "YF_ATRISK"), "—")
+        polio_cases = next((row["value"] for row in polio_rows if row["indicator_code"] == "POL_CONFIRMED"), "—")
+        measles_status = next((row["status"] for row in elim_rows if row["disease"] == "measles"), "—")
+        cards[0].metric("Yellow fever at-risk", yf_risk or "—")
+        cards[1].metric("Confirmed polio cases", polio_cases or "—")
+        cards[2].metric("Measles elimination", measles_status or "—")
+        cards[3].metric("Adult/risk schedule rows", f"{int(schedule_count[0]['n']) if schedule_count else 0:,}")
+
+        adult_cov = query_who(
+            """
+            SELECT year, antigen_description, coverage_category_description, coverage
+            FROM who_adult_coverage
+            WHERE code = %s AND coverage <> ''
+            ORDER BY year::int, antigen_description;
+            """,
+            (iso3,),
+        )
+        if adult_cov:
+            cov_frame = pd.DataFrame(adult_cov)
+            cov_frame["coverage"] = pd.to_numeric(cov_frame["coverage"], errors="coerce")
+            cov_frame = cov_frame.dropna(subset=["coverage"])
+            if not cov_frame.empty:
+                fig = px.line(
+                    cov_frame,
+                    x="year",
+                    y="coverage",
+                    color="antigen_description",
+                    markers=True,
+                    title="Adult influenza / COVID vaccination coverage",
+                    labels={"coverage": "Coverage (%)", "year": "Year", "antigen_description": "Population"},
+                )
+                fig.update_layout(legend_title_text="", margin=dict(l=20, r=20, t=55, b=20))
+                st.plotly_chart(fig, use_container_width=True)
+
+    with disease_tab:
+        diseases = query_who(
+            """
+            SELECT disease, MAX(disease_description) AS disease_description
+            FROM who_vpd_annual
+            WHERE metric = 'incidence_rate'
+              AND disease NOT IN ('CRS', 'NTETANUS')
+            GROUP BY disease
+            ORDER BY disease_description;
+            """
+        )
+        disease_labels = [f"{row['disease_description']} · {row['disease']}" for row in diseases]
+        disease_label = st.selectbox("Disease", disease_labels, key="who_disease")
+        disease = diseases[disease_labels.index(disease_label)]
+
+        latest_year_row = query_who(
+            """
+            SELECT MAX(year::int) AS year
+            FROM who_vpd_annual
+            WHERE disease = %s AND metric = 'incidence_rate' AND value <> '';
+            """,
+            (disease["disease"],),
+        )
+        latest_year = int(latest_year_row[0]["year"]) if latest_year_row and latest_year_row[0]["year"] else None
+
+        if latest_year:
+            map_rows = query_who(
+                """
+                SELECT code, name, value, denominator
+                FROM who_vpd_annual
+                WHERE disease = %s AND metric = 'incidence_rate'
+                  AND year = %s AND value <> '';
+                """,
+                (disease["disease"], str(latest_year)),
+            )
+            map_frame = pd.DataFrame(map_rows)
+            if not map_frame.empty:
+                map_frame["value"] = pd.to_numeric(map_frame["value"], errors="coerce")
+                map_frame = map_frame.dropna(subset=["value"])
+                if not map_frame.empty:
+                    fig = px.choropleth(
+                        map_frame,
+                        locations="code",
+                        color="value",
+                        hover_name="name",
+                        locationmode="ISO-3",
+                        title=f"{disease['disease_description']} incidence — {latest_year}",
+                        labels={"value": "Incidence rate"},
+                    )
+                    fig.update_geos(showframe=False, showcoastlines=True)
+                    fig.update_layout(margin=dict(l=0, r=0, t=55, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+
+        trend_rows = query_who(
+            """
+            SELECT year, metric, value, denominator
+            FROM who_vpd_annual
+            WHERE code = %s AND disease = %s AND value <> ''
+            ORDER BY year::int;
+            """,
+            (iso3, disease["disease"]),
+        )
+        if trend_rows:
+            trend = pd.DataFrame(trend_rows)
+            trend["value"] = pd.to_numeric(trend["value"], errors="coerce")
+            trend = trend.dropna(subset=["value"])
+            incidence = trend[trend["metric"] == "incidence_rate"]
+            cases = trend[trend["metric"] == "cases"]
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if not incidence.empty:
+                    fig = px.line(
+                        incidence,
+                        x="year",
+                        y="value",
+                        markers=True,
+                        title=f"{country_name}: incidence trend",
+                        labels={"value": "Incidence rate", "year": "Year"},
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            with col_b:
+                if not cases.empty:
+                    fig = px.bar(
+                        cases,
+                        x="year",
+                        y="value",
+                        title=f"{country_name}: reported cases",
+                        labels={"value": "Cases", "year": "Year"},
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+    with schedule_tab:
+        schedule_rows = query_who(
+            """
+            SELECT year, vaccinecode, vaccine_description, schedulerounds,
+                   targetpop_description, ageadministered, sourcecomment
+            FROM who_vaccine_schedule_adult
+            WHERE iso_3_code = %s
+            ORDER BY year::int DESC, vaccine_description, schedulerounds;
+            """,
+            (iso3,),
+        )
+        if not schedule_rows:
+            st.info("No adult/risk/health-worker/traveler schedule rows were found for this country.")
+        else:
+            schedule_frame = pd.DataFrame(schedule_rows)
+            vaccine_options = ["All"] + sorted(schedule_frame["vaccine_description"].dropna().unique().tolist())
+            vaccine_filter = st.selectbox("Vaccine", vaccine_options, key="who_schedule_vaccine")
+            if vaccine_filter != "All":
+                schedule_frame = schedule_frame[schedule_frame["vaccine_description"] == vaccine_filter]
+            st.dataframe(schedule_frame, use_container_width=True, hide_index=True)
+
+    with mr_tab:
+        mr_rows = query_who(
+            """
+            SELECT year, month, measles_total, rubella_total,
+                   measles_lab_confirmed, rubella_lab_confirmed
+            FROM who_mr_monthly
+            WHERE iso3 = %s
+            ORDER BY year::int, month::int;
+            """,
+            (iso3,),
+        )
+        if mr_rows:
+            mr = pd.DataFrame(mr_rows)
+            mr["date"] = pd.to_datetime(
+                mr["year"].astype(str) + "-" + mr["month"].astype(str).str.zfill(2) + "-01",
+                errors="coerce",
+            )
+            for col in ["measles_total", "rubella_total", "measles_lab_confirmed", "rubella_lab_confirmed"]:
+                mr[col] = pd.to_numeric(mr[col], errors="coerce").fillna(0)
+            plot = mr.melt(
+                id_vars=["date"],
+                value_vars=["measles_total", "rubella_total"],
+                var_name="disease",
+                value_name="cases",
+            )
+            fig = px.line(
+                plot,
+                x="date",
+                y="cases",
+                color="disease",
+                title=f"{country_name}: provisional monthly measles / rubella",
+                labels={"date": "Month", "cases": "Cases", "disease": ""},
+            )
+            fig.update_layout(legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True)
+
+        elimination = query_who(
+            """
+            SELECT disease, year, status
+            FROM who_mr_elimination
+            WHERE iso3 = %s
+            ORDER BY disease, year::int DESC;
+            """,
+            (iso3,),
+        )
+        if elimination:
+            st.dataframe(pd.DataFrame(elimination), use_container_width=True, hide_index=True)
+
+        sia = query_who(
+            """
+            SELECT year, activity_type, intervention, agegroup, extent, status,
+                   target, doses, admin_coverage, activity_areas_comment
+            FROM who_mr_sia_adult
+            WHERE country = %s
+            ORDER BY year::int DESC;
+            """,
+            (iso3,),
+        )
+        if sia:
+            st.markdown("#### Adult-including measles/rubella campaigns")
+            st.dataframe(pd.DataFrame(sia), use_container_width=True, hide_index=True)
+
+    with program_tab:
+        categories = query_who(
+            """
+            SELECT DISTINCT category_code, category_description
+            FROM who_program_indicators
+            WHERE iso3 = %s
+            ORDER BY category_description;
+            """,
+            (iso3,),
+        )
+        if not categories:
+            st.info("No WHO program/supply indicators are available for this country.")
+        else:
+            category_labels = [
+                f"{row['category_description']} · {row['category_code']}" for row in categories
+            ]
+            category_label = st.selectbox("Indicator category", category_labels, key="who_program_category")
+            category = categories[category_labels.index(category_label)]
+            indicators = query_who(
+                """
+                SELECT year, indicator_code, description, value, snapshot_date
+                FROM who_program_indicators
+                WHERE iso3 = %s AND category_code = %s
+                ORDER BY year::int DESC, NULLIF(sort_order, '')::int NULLS LAST, indicator_code;
+                """,
+                (iso3, category["category_code"]),
+            )
+            st.dataframe(pd.DataFrame(indicators), use_container_width=True, hide_index=True)
+
+    with st.expander("WHO ingestion manifest"):
+        st.json(manifest)
+
 def main() -> None:
     import streamlit as st
 
@@ -788,8 +1130,8 @@ def main() -> None:
         st.query_params.clear()
         st.rerun()
 
-    tab_generate, tab_forms, tab_cdc = st.tabs(
-        ["Generate Prescriptions", "Prescription Forms", "CDC Data"]
+    tab_generate, tab_forms, tab_cdc, tab_who = st.tabs(
+        ["Generate Prescriptions", "Prescription Forms", "CDC Data", "WHO Data"]
     )
     with tab_generate:
         render_generate_tab()
@@ -797,6 +1139,8 @@ def main() -> None:
         render_configure_tab()
     with tab_cdc:
         render_cdc_data_tab()
+    with tab_who:
+        render_who_data_tab()
 
 
 if __name__ == "__main__":
