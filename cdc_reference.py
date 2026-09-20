@@ -7,6 +7,7 @@ from io import StringIO
 from typing import Any
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 import pandas as pd
 
@@ -29,6 +30,23 @@ YELLOW_BOOK_COUNTRY_URL = (
 class CdcContentSource:
     media_id: int
     title: str
+    description: str
+
+
+@dataclass(frozen=True)
+class CdcClinicalSource:
+    key: str
+    title: str
+    url: str
+    description: str
+    category: str
+
+
+@dataclass(frozen=True)
+class CdcDownloadSource:
+    key: str
+    title: str
+    url: str
     description: str
 
 
@@ -110,6 +128,99 @@ CDC_IIS_TABLE_SOURCES: tuple[CdcReferenceTableSource, ...] = (
         "Current CDC RSV, COVID-19, and influenza code/crosswalk tables.",
     ),
 )
+
+
+CDSI_DOWNLOADS: tuple[CdcDownloadSource, ...] = (
+    CdcDownloadSource(
+        "cdsi-supporting-data",
+        "CDSi Supporting Data v4.65",
+        "https://www.cdc.gov/iis/downloads/supporting-data-4.65-508.zip",
+        "CDC implementation-neutral supporting data for immunization evaluation and forecasting; updated August 2026.",
+    ),
+    CdcDownloadSource(
+        "cdsi-healthy-adult-test-cases",
+        "CDSi Healthy Childhood and Adult Test Cases v4.46",
+        "https://www.cdc.gov/iis/downloads/cdsi-healthy-childhood-and-adult-test-cases-v4.46.xlsx",
+        "CDC routine age-based CDSi test cases, including adults; updated August 2026.",
+    ),
+    CdcDownloadSource(
+        "cdsi-underlying-condition-test-cases",
+        "CDSi Underlying Conditions Test Cases v4.6",
+        "https://www.cdc.gov/iis/downloads/CDSi-underlying-conditions-test-cases-v4.6.xlsx",
+        "CDC test cases where risk factors, immunity, contraindications, or indications affect recommendations.",
+    ),
+)
+
+
+CDC_CLINICAL_SOURCES: tuple[CdcClinicalSource, ...] = (
+    CdcClinicalSource(
+        "adult-notes",
+        "Adult Immunization Schedule Notes",
+        "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-notes.html",
+        "Dose counts, intervals, special situations, evidence-of-immunity rules, and vaccine-specific adult guidance.",
+        "Adult schedule",
+    ),
+    CdcClinicalSource(
+        "adult-appendix",
+        "Adult Immunization Schedule Appendix",
+        "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-appendix.html",
+        "CDC contraindications and precautions by vaccine type for adults.",
+        "Adult schedule",
+    ),
+    CdcClinicalSource(
+        "timing-spacing",
+        "Timing & Spacing of Immunobiologics",
+        "https://www.cdc.gov/vaccines/hcp/imz-best-practices/timing-spacing-immunobiologics.html",
+        "Minimum ages and intervals, grace periods, simultaneous vaccination, live-vaccine spacing, and antibody-product timing.",
+        "Dose validation",
+    ),
+    CdcClinicalSource(
+        "occupational-hepb",
+        "Occupational Hepatitis B Logic",
+        "https://www.cdc.gov/hepatitis-b/hcp/infection-control/index.html",
+        "CDC occupational HBV exposure logic using vaccine documentation, anti-HBs results, source HBsAg status, HBIG, revaccination, and follow-up testing.",
+        "Occupational health",
+    ),
+    CdcClinicalSource(
+        "adult-medical-indications",
+        "Adult Schedule by Medical Condition / Other Indication",
+        "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-medical-condition.html",
+        "Adult risk-based recommendations including health care personnel and medical indications.",
+        "Occupation / risk",
+    ),
+    CdcClinicalSource(
+        "meningococcal-risk",
+        "Meningococcal Risk-Based Indications",
+        "https://www.cdc.gov/meningococcal/hcp/vaccine-recommendations/risk-indications.html",
+        "Risk-based MenACWY and MenB indications including microbiologists, military recruits, travel, and outbreak settings.",
+        "Occupation / risk",
+    ),
+    CdcClinicalSource(
+        "rabies-prep",
+        "Rabies Pre-exposure Prophylaxis Risk Categories",
+        "https://www.cdc.gov/rabies/hcp/clinical-care/pre-exposure-prophylaxis.html",
+        "Occupation and travel risk categories for rabies PrEP, including laboratory, animal, bat, veterinary, wildlife, and selected traveler exposure.",
+        "Occupation / risk",
+    ),
+    CdcClinicalSource(
+        "hcp-immunization-programs",
+        "Healthcare Personnel Immunization Programs",
+        "https://www.cdc.gov/infection-control/hcp/healthcare-personnel-infrastructure-routine-practices/immunization-programs.html",
+        "CDC occupational infection-control recommendations for preplacement, annual, and other job-related immunizations.",
+        "Occupation / risk",
+    ),
+    CdcClinicalSource(
+        "icvp",
+        "ICVP / Yellow Card Rules",
+        "https://wwwnc.cdc.gov/travel/page/icvp",
+        "Rules for completing, validating, reissuing, and documenting medical waivers on the International Certificate of Vaccination or Prophylaxis.",
+        "Travel documentation",
+    ),
+)
+
+
+TRAVEL_HEALTH_NOTICES_URL = "https://wwwnc.cdc.gov/travel/notices/"
+TRAVEL_HEALTH_NOTICES_RSS = "https://wwwnc.cdc.gov/travel/rss/notices.xml"
 
 
 PARKED_IMPORT_SOURCES: tuple[dict[str, str], ...] = (
@@ -250,3 +361,27 @@ def fetch_travel_vaccine_table(url: str, *, timeout: int = 45) -> pd.DataFrame:
     if frame is None:
         raise RuntimeError("CDC destination page did not expose a vaccine recommendations table.")
     return frame
+
+
+def fetch_travel_health_notices(*, timeout: int = 45) -> list[dict[str, str]]:
+    xml_bytes = _fetch_bytes(TRAVEL_HEALTH_NOTICES_RSS, timeout=timeout)
+    root = ElementTree.fromstring(xml_bytes)
+    notices: list[dict[str, str]] = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        published = (item.findtext("pubDate") or "").strip()
+        description = (item.findtext("description") or "").strip()
+        level = ""
+        if title.lower().startswith("level "):
+            level = title.split(" - ", 1)[0]
+        notices.append(
+            {
+                "level": level,
+                "title": title,
+                "published": published,
+                "link": link,
+                "description": description,
+            }
+        )
+    return notices
