@@ -340,15 +340,20 @@ def render_cdc_data_tab() -> None:
         sources_for_category,
     )
     from cdc_reference import (
+        CDC_CLINICAL_SOURCES,
         CDC_CONTENT_SOURCES,
         CDC_IIS_TABLE_SOURCES,
+        CDSI_DOWNLOADS,
         IIS_ACCESS_OPTIONS_URL,
         IIS_RUNTIME_REST_URL,
         PARKED_IMPORT_SOURCES,
+        TRAVEL_HEALTH_NOTICES_RSS,
+        TRAVEL_HEALTH_NOTICES_URL,
         YELLOW_BOOK_COUNTRY_URL,
         fetch_content_api_html,
         fetch_html_tables,
         fetch_travel_destinations,
+        fetch_travel_health_notices,
         fetch_travel_vaccine_table,
     )
 
@@ -358,8 +363,16 @@ def render_cdc_data_tab() -> None:
         "travel vaccine recommendations in one workspace."
     )
 
-    live_tab, schedule_tab, codes_tab, travel_tab, imports_tab = st.tabs(
-        ["SODA2 Data", "Adult Schedules", "Vaccine Codes", "Travel Vaccines", "Importer Queue"]
+    live_tab, schedule_tab, clinical_tab, codes_tab, travel_tab, notices_tab, imports_tab = st.tabs(
+        [
+            "SODA2 Data",
+            "Adult Schedules",
+            "Clinical Rules",
+            "Vaccine Codes",
+            "Travel Vaccines",
+            "Travel Notices",
+            "Importer Queue",
+        ]
     )
 
     with live_tab:
@@ -486,6 +499,94 @@ def render_cdc_data_tab() -> None:
         ):
             components.html(schedule_html, height=950, scrolling=True)
 
+    with clinical_tab:
+        st.caption(
+            "CDC implementation data and clinical guidance for vaccine evaluation, "
+            "dose validation, occupational risk, and travel documentation."
+        )
+
+        st.markdown("#### CDSi — computable immunization logic")
+        st.caption(
+            "CDC CDSi provides implementation-neutral supporting data and validation test cases "
+            "for immunization evaluation and forecasting."
+        )
+        for item in CDSI_DOWNLOADS:
+            left, right = st.columns([3, 1])
+            with left:
+                st.markdown(f"**{item.title}**")
+                st.caption(item.description)
+            with right:
+                st.link_button("Open / Download", item.url, key=f"cdsi_{item.key}")
+
+        st.markdown("#### Clinical guidance library")
+        clinical_categories = ["All"] + sorted(
+            {item.category for item in CDC_CLINICAL_SOURCES}
+        )
+        clinical_category = st.selectbox(
+            "Guidance category",
+            clinical_categories,
+            key="cdc_clinical_category",
+        )
+        clinical_sources = [
+            item
+            for item in CDC_CLINICAL_SOURCES
+            if clinical_category == "All" or item.category == clinical_category
+        ]
+        clinical_label = st.selectbox(
+            "CDC clinical source",
+            [f"{item.title} · {item.key}" for item in clinical_sources],
+            key="cdc_clinical_source",
+        )
+        clinical_source = next(
+            item for item in clinical_sources if clinical_label.endswith(item.key)
+        )
+        st.caption(clinical_source.description)
+        st.link_button("Open official CDC guidance", clinical_source.url)
+
+        if st.button(
+            "Load guidance tables",
+            type="primary",
+            key="load_cdc_clinical_tables",
+        ):
+            try:
+                tables = fetch_html_tables(clinical_source.url)
+                st.session_state["cdc_clinical_tables"] = tables
+                st.session_state["cdc_clinical_key"] = clinical_source.key
+            except ValueError:
+                st.session_state["cdc_clinical_tables"] = []
+                st.session_state["cdc_clinical_key"] = clinical_source.key
+                st.info(
+                    "This CDC guidance is primarily narrative rather than tabular. "
+                    "Use the official CDC guidance link above."
+                )
+            except Exception as exc:
+                st.session_state.pop("cdc_clinical_tables", None)
+                st.error(f"CDC clinical-guidance request failed: {exc}")
+
+        clinical_tables = st.session_state.get("cdc_clinical_tables")
+        if (
+            clinical_tables
+            and st.session_state.get("cdc_clinical_key") == clinical_source.key
+        ):
+            clinical_table_choice = st.selectbox(
+                "Guidance table",
+                [
+                    f"Table {index + 1} · {len(frame):,} rows · {len(frame.columns)} columns"
+                    for index, frame in enumerate(clinical_tables)
+                ],
+                key="cdc_clinical_table_choice",
+            )
+            clinical_table_index = int(clinical_table_choice.split()[1]) - 1
+            clinical_frame = clinical_tables[clinical_table_index]
+            st.dataframe(clinical_frame, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download displayed guidance table as CSV",
+                data=clinical_frame.to_csv(index=False).encode("utf-8"),
+                file_name=f"cdc-{clinical_source.key}-table-{clinical_table_index + 1}.csv",
+                mime="text/csv",
+                key="cdc_clinical_download",
+            )
+
     with codes_tab:
         st.caption(
             "Live CDC IIS reference tables for CVX, MVX, products, NDC, CPT, VIS, "
@@ -592,6 +693,59 @@ def render_cdc_data_tab() -> None:
                     mime="text/csv",
                     key="cdc_travel_download",
                 )
+
+    with notices_tab:
+        st.caption(
+            "Current CDC Travel Health Notices from the official Travelers' Health RSS feed."
+        )
+        links_left, links_right = st.columns(2)
+        with links_left:
+            st.link_button("Open Travel Health Notices", TRAVEL_HEALTH_NOTICES_URL)
+        with links_right:
+            st.link_button("Open CDC notices RSS", TRAVEL_HEALTH_NOTICES_RSS)
+
+        if st.button(
+            "Refresh Travel Health Notices",
+            type="primary",
+            key="load_cdc_travel_notices",
+        ):
+            try:
+                st.session_state["cdc_travel_notices"] = fetch_travel_health_notices()
+            except Exception as exc:
+                st.session_state.pop("cdc_travel_notices", None)
+                st.error(f"CDC Travel Health Notice request failed: {exc}")
+
+        notices = st.session_state.get("cdc_travel_notices")
+        if notices:
+            notices_frame = pd.DataFrame(notices)
+            notice_search = st.text_input(
+                "Filter notices by country, disease, or level",
+                key="cdc_notice_search",
+            ).strip()
+            if notice_search:
+                mask = notices_frame.astype(str).apply(
+                    lambda col: col.str.contains(
+                        notice_search, case=False, na=False, regex=False
+                    )
+                ).any(axis=1)
+                notices_frame = notices_frame.loc[mask]
+
+            display_columns = ["level", "title", "published", "link"]
+            st.dataframe(
+                notices_frame[display_columns],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "link": st.column_config.LinkColumn("CDC notice"),
+                },
+            )
+            st.download_button(
+                "Download current notices as CSV",
+                data=notices_frame.to_csv(index=False).encode("utf-8"),
+                file_name="cdc-travel-health-notices.csv",
+                mime="text/csv",
+                key="cdc_notices_download",
+            )
 
     with imports_tab:
         st.caption(
